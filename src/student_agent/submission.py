@@ -65,6 +65,8 @@ def validate_artifacts(
         raise ValueError("traces/trace.jsonl is missing or not UTF-8") from exc
     normalized_lines: list[str] = []
     seen_events: set[str] = set()
+    consumed_refs_by_case: dict[str, set[str]] = {case_id: set() for case_id in expected}
+    evidence_owners: dict[str, str] = {}
     for number, line in enumerate(trace_lines, 1):
         if not line.strip():
             continue
@@ -78,7 +80,28 @@ def validate_artifacts(
         if event["event_id"] in seen_events:
             raise ValueError(f"traces/trace.jsonl:{number}: duplicate event_id")
         seen_events.add(event["event_id"])
+        if event["event_type"] == "tool_result_consumed":
+            for evidence_ref in event.get("evidence_refs", []):
+                owner = evidence_owners.setdefault(evidence_ref, event["case_id"])
+                if owner != event["case_id"]:
+                    raise ValueError(
+                        f"traces/trace.jsonl:{number}: evidence ref belongs to multiple cases"
+                    )
+                consumed_refs_by_case[event["case_id"]].add(evidence_ref)
         normalized_lines.append(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+
+    for case_id, output in outputs.items():
+        unknown_refs = set(output["evidence_refs"]) - consumed_refs_by_case[case_id]
+        if unknown_refs:
+            raise ValueError(
+                f"outputs/{case_id}.json: unknown evidence_ref(s): {sorted(unknown_refs)}"
+            )
+        top_level_refs = set(output["evidence_refs"])
+        for claim in output.get("claim_assessments", []):
+            if not set(claim["evidence_refs"]).issubset(top_level_refs):
+                raise ValueError(
+                    f"outputs/{case_id}.json: claim evidence is outside top-level evidence"
+                )
 
     serialized = [json.dumps(value, ensure_ascii=False) for value in outputs.values()]
     if SECRET_PATTERN.search("\n".join([*serialized, *normalized_lines])):
