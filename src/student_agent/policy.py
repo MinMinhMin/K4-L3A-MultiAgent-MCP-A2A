@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -167,6 +167,23 @@ def _payment_rows(ledger: EvidenceLedger) -> list[dict[str, Any]]:
     )
 
 
+def _dedupe_payment_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict[str, Any]] = []
+    for row in rows:
+        references = _values(
+            row, {"payment_reference", "payment_id", "transaction_id", "transactionid"}
+        )
+        if references:
+            identity = ("reference", str(references[0]))
+        else:
+            identity = ("row", json.dumps(row, sort_keys=True, default=str))
+        if identity not in seen:
+            seen.add(identity)
+            unique.append(row)
+    return unique
+
+
 def _refund_rows(ledger: EvidenceLedger) -> list[dict[str, Any]]:
     return _rows(
         _record_data(ledger, {"refund"}),
@@ -242,7 +259,8 @@ def analyze_case(case: dict[str, Any], ledger: EvidenceLedger) -> Decision:
         order_data,
         {"order_total", "order_amount", "total_amount", "total_value", "price_total"},
     )
-    payment_rows = _payment_rows(ledger)
+    raw_payment_rows = _payment_rows(ledger)
+    payment_rows = _dedupe_payment_rows(raw_payment_rows)
     payment_amounts = [
         parsed
         for row in payment_rows
@@ -258,8 +276,18 @@ def analyze_case(case: dict[str, Any], ledger: EvidenceLedger) -> Decision:
     paid_statuses = {"paid", "approved", "captured", "charged", "authorized", "completed"}
     paid_confirmed = payment_total > ZERO or bool(payment_statuses & paid_statuses)
 
-    reference_counts = Counter(payment_references)
-    duplicate_charge = any(count > 1 for count in reference_counts.values())
+    duplicate_markers = _values(
+        raw_payment_rows, {"is_duplicate", "duplicate_charge", "charge_type"}
+    )
+    explicit_duplicate = any(
+        value is True or _key(value) in {"duplicate", "duplicatecharge"}
+        for value in duplicate_markers
+    )
+    duplicate_charge = explicit_duplicate or (
+        len(payment_rows) > 1
+        and order_total is not None
+        and payment_total > order_total
+    )
     payment_mismatch = (
         order_total is not None and payment_total > ZERO and abs(payment_total - order_total) > CENT
     )

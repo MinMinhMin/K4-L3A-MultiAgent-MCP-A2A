@@ -195,3 +195,34 @@ def test_valid_split_payment_is_not_reported_as_mismatch() -> None:
     assert decision.primary_issue == "valid_split_payment"
     assert decision.case_status == "no_action"
     assert decision.refund_total == Decimal("0")
+
+
+
+def test_payment_timeline_duplicate_source_does_not_double_count() -> None:
+    ledger = ledger_for(
+        order={"order_id": "o-1", "order_total": "40.00", "order_status": "delivered"},
+        payment={
+            "payments": [
+                {"payment_reference": "p-1", "payment_value": "40.00", "payment_status": "paid"}
+            ]
+        },
+    )
+    ledger.add(
+        EvidenceRecord(
+            tool_name="get_payment_timeline",
+            actor="payment-agent",
+            evidence_ref="ev_00000000000000000003",
+            domain="payment",
+            data={
+                "payments": [
+                    {"payment_reference": "p-1", "payment_value": "40.00", "payment_status": "paid"}
+                ]
+            },
+            warnings=(),
+        )
+    )
+
+    decision = analyze_case(case_with_claim("valid_split_payment"), ledger)
+
+    assert decision.primary_issue == "insufficient_evidence"
+    assert decision.refund_total == Decimal("0")
