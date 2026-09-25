@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -23,8 +25,22 @@ class EvidenceGateway:
 
     async def call(self, tool_name: str, *, case_id: str, **arguments: str) -> dict[str, Any]:
         payload = {"case_id": case_id, **arguments}
-        result = await self._session.call_tool(tool_name, arguments=payload)
-        if result.isError:
+        for attempt in range(1, 4):
+            try:
+                result = await self._session.call_tool(tool_name, arguments=payload)
+                break
+            except httpx2.TransportError as exc:
+                if attempt == 3:
+                    raise
+                delay = 0.5 * (2 ** (attempt - 1))
+                print(
+                    f"RETRY: MCP tool {tool_name} transport failure "
+                    f"({attempt}/3); retrying in {delay:.1f}s: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                await asyncio.sleep(delay)
+        if result.is_error:
             message = " ".join(
                 block.text for block in result.content if getattr(block, "text", None)
             )
